@@ -1,0 +1,10 @@
+{
+  "name": "TestEcho",
+  "version": "1.0.0",
+  "authors": ["Flemming N. Larsen"],
+  "description": "Test submission that turns its gun and fires at scanned opponents. Used to check the test Rumble end to end.",
+  "platform": "JVM",
+  "programmingLang": "Java 25",
+  "gameTypes": ["1v1", "melee", "twinduel"],
+  "license": "Apache-2.0"
+}

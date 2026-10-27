@@ -1,0 +1,275 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+REPOSITORY = Path(__file__).parents[1]
+VALIDATOR = REPOSITORY / "scripts" / "validate_bot.py"
+TEST_OWNER = "flemming-n-larsen"
+sys.path.insert(0, str(REPOSITORY / "scripts"))
+from validate_bot import tree_hash  # noqa: E402
+
+
+class ValidatorIntegrationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary_directory.name)
+        shutil.copytree(REPOSITORY / "bots", self.root / "bots")
+
+        # Submission tests run as the repository's default test owner. Exclude other owners'
+        # live bots from the fixture so a contributor's version update is not mistaken for
+        # an unrelated source change by the fixture owner.
+        bots_root = self.root / "bots"
+        owners_path = bots_root / "owners.json"
+        owners = json.loads(owners_path.read_text(encoding="utf-8"))
+        owner_record = next(owner for owner in owners["owners"] if TEST_OWNER in owner["accounts"])
+        catalog_path = bots_root / "index.json"
+        catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+        owned_entries = [entry for entry in catalog["bots"] if entry["owner"] == TEST_OWNER]
+        owned_paths = {entry["path"] for entry in owned_entries}
+
+        for platform_directory in bots_root.iterdir():
+            if not platform_directory.is_dir():
+                continue
+            for bot_directory in platform_directory.iterdir():
+                relative_path = bot_directory.relative_to(self.root).as_posix()
+                if bot_directory.is_dir() and relative_path not in owned_paths:
+                    shutil.rmtree(bot_directory)
+
+        catalog["bots"] = owned_entries
+        owners["owners"] = [owner_record]
+        catalog_path.write_text(json.dumps(catalog, indent=2) + "\n", encoding="utf-8")
+        owners_path.write_text(json.dumps(owners, indent=2) + "\n", encoding="utf-8")
+
+    def tearDown(self) -> None:
+        self.temporary_directory.cleanup()
+
+    def run_validator(self, *arguments: str, owner: str = TEST_OWNER) -> subprocess.CompletedProcess[str]:
+        return subprocess.run([sys.executable, str(VALIDATOR), "--root", str(self.root), "--owner", owner, *arguments], text=True, capture_output=True, check=False)
+
+    def add_bot(self, name: str) -> None:
+        source = self.root / "bots" / "python" / "Orbit"
+        destination = self.root / "bots" / "python" / name
+        shutil.copytree(source, destination)
+        (destination / "Orbit.sh").rename(destination / f"{name}.sh")
+        (destination / "Orbit.cmd").rename(destination / f"{name}.cmd")
+        config_path = destination / "Orbit.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config["name"] = name
+        config_path.unlink()
+        (destination / f"{name}.json").write_text(json.dumps(config), encoding="utf-8")
+
+    def bump_version(self, name: str, version: str) -> None:
+        config_path = self.root / "bots" / "python" / name / f"{name}.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config["version"] = version
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    def add_java_bot(self, name: str) -> None:
+        destination = self.root / "bots" / "java" / name
+        destination.mkdir(parents=True)
+        config = {
+            "name": name,
+            "version": "1.0.2",
+            "authors": ["Test author"],
+            "license": "Apache-2.0",
+            "platform": "JVM",
+        }
+        (destination / f"{name}.json").write_text(json.dumps(config), encoding="utf-8")
+        (destination / f"{name}.java").write_text("// dev.robocode.tankroyale.botapi", encoding="utf-8")
+        for suffix in (".sh", ".cmd"):
+            (destination / f"{name}{suffix}").write_text("", encoding="utf-8")
+        script = destination / f"{name}.sh"
+        script.chmod(script.stat().st_mode | 0o111)  # the validator requires the executable bit on POSIX
+
+    def add_team(self, name: str, members: list[str]) -> None:
+        destination = self.root / "bots" / "python" / name
+        destination.mkdir()
+        config = {
+            "name": name,
+            "version": "1.0",
+            "authors": ["Test author"],
+            "license": "Apache-2.0",
+            "teamMembers": members,
+        }
+        (destination / f"{name}.json").write_text(json.dumps(config), encoding="utf-8")
+
+    def test_valid_submission_generates_an_active_catalog_entry(self) -> None:
+        result = self.run_validator("--smoke", "--generate")
+        self.assertEqual(0, result.returncode, result.stderr)
+        catalog = json.loads((self.root / "bots" / "index.json").read_text(encoding="utf-8"))
+        orbit = next(entry for entry in catalog["bots"] if entry["name"] == "Orbit" and entry["status"] == "active")
+        self.assertEqual("active", orbit["status"])
+
+    def test_catalog_can_be_reproduced_at_its_recorded_utc_timestamp(self) -> None:
+        timestamp = "2026-10-21T00:00:00Z"
+        self.assertEqual(0, self.run_validator("--generate", "--generated-at", timestamp).returncode)
+        first = (self.root / "bots" / "index.json").read_bytes()
+        self.assertEqual(0, self.run_validator("--generate", "--generated-at", timestamp).returncode)
+        self.assertEqual(first, (self.root / "bots" / "index.json").read_bytes())
+        self.assertEqual(timestamp, json.loads(first)["generatedAt"])
+
+    def test_catalog_timestamp_must_be_utc(self) -> None:
+        result = self.run_validator("--generate", "--generated-at", "2026-10-21T02:00:00+02:00")
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("must use UTC", result.stderr)
+
+    def test_invalid_license_is_rejected(self) -> None:
+        config_path = self.root / "bots" / "python" / "Orbit" / "Orbit.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config["license"] = "Proprietary"
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+        result = self.run_validator()
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("license", result.stderr)
+
+    def test_source_change_without_version_increase_is_rejected(self) -> None:
+        self.assertEqual(0, self.run_validator("--generate").returncode)
+        source_path = self.root / "bots" / "python" / "Orbit" / "src" / "Orbit.py"
+        source_path.write_text(source_path.read_text(encoding="utf-8") + "\n# changed\n", encoding="utf-8")
+        result = self.run_validator()
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("without increasing its version", result.stderr)
+
+    def test_version_increase_supersedes_the_previous_catalog_entry(self) -> None:
+        # SpinBot has no team member depending on it, unlike Orbit (OrbitVector) and
+        # Corners/Crazy (CornersCrazy), so bumping its version here can't break a team identity.
+        self.assertEqual(0, self.run_validator("--generate").returncode)
+        config_path = self.root / "bots" / "java" / "SpinBot" / "SpinBot.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config["version"] = "1.0.4"
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+        self.assertEqual(0, self.run_validator("--generate").returncode)
+        catalog = json.loads((self.root / "bots" / "index.json").read_text(encoding="utf-8"))
+        spinbot = [entry for entry in catalog["bots"] if entry["name"] == "SpinBot"]
+        self.assertEqual(["superseded", "active"], [entry["status"] for entry in spinbot])
+
+    def test_new_bot_from_another_owner_ignores_unchanged_catalog_entries(self) -> None:
+        self.assertEqual(0, self.run_validator("--generate").returncode)
+        self.add_bot("Nova")
+        result = self.run_validator("--generate", owner="alice")
+        self.assertEqual(0, result.returncode, result.stderr)
+        catalog = json.loads((self.root / "bots" / "index.json").read_text(encoding="utf-8"))
+        nova = next(entry for entry in catalog["bots"] if entry["name"] == "Nova")
+        self.assertEqual("alice", nova["owner"])
+
+    def test_general_validation_does_not_claim_another_owners_unpublished_bot(self) -> None:
+        config_path = self.root / "bots" / "java" / "SpinBot" / "SpinBot.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config["version"] = "1.0.4"
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+        self.assertIn("belongs to owner", self.run_validator(owner="alice").stderr)
+        result = self.run_validator("--skip-governance", owner="alice")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("cannot be used with --generate", self.run_validator("--skip-governance", "--generate").stderr)
+
+    def test_registered_secondary_account_can_update_and_is_preserved(self) -> None:
+        owners_path = self.root / "bots" / "owners.json"
+        owners = json.loads(owners_path.read_text(encoding="utf-8"))
+        owners["owners"][0]["ownerId"] = "primary"
+        owners["owners"][0]["accounts"] = ["primary", "secondary"]
+        owners_path.write_text(json.dumps(owners), encoding="utf-8")
+        config_path = self.root / "bots" / "java" / "SpinBot" / "SpinBot.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config["version"] = "1.0.4"
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+        result = self.run_validator("--generate", owner="secondary")
+        self.assertEqual(0, result.returncode, result.stderr)
+        regenerated_owners = json.loads(owners_path.read_text(encoding="utf-8"))
+        self.assertEqual(["primary", "secondary"], regenerated_owners["owners"][0]["accounts"])
+
+    def test_RBC004_IntegrationPositive_team_members_are_published_as_catalog_identities(self) -> None:
+        self.add_bot("Nova")
+        self.add_team("OrbitNova", ["Orbit 1.0.0", "Nova 1.0.0"])
+
+        result = self.run_validator("--generate")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        catalog = json.loads((self.root / "bots" / "index.json").read_text(encoding="utf-8"))
+        entries = {entry["name"]: entry for entry in catalog["bots"] if entry["status"] == "active"}
+        self.assertEqual(["Orbit 1.0.0", "Nova 1.0.0"], entries["OrbitNova"]["teamMembers"])
+        self.assertEqual("Python", entries["OrbitNova"]["platform"])
+        self.assertEqual([], entries["Orbit"]["teamMembers"])
+
+    def test_RBC004_IntegrationNegative_unknown_team_member_is_rejected(self) -> None:
+        self.add_team("BrokenTeam", ["Orbit 1.0.0", "Missing 1.0"])
+
+        result = self.run_validator("--generate")
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("unknown team member `Missing 1.0`", result.stderr)
+
+    def test_RBC004_IntegrationNegative_member_version_bump_invalidates_the_team_identity(self) -> None:
+        self.add_bot("Nova")
+        self.add_team("OrbitNova", ["Orbit 1.0.0", "Nova 1.0.0"])
+        self.assertEqual(0, self.run_validator("--generate").returncode)
+        self.bump_version("Nova", "1.0.4")
+
+        result = self.run_validator("--generate")
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("unknown team member `Nova 1.0.0`", result.stderr)
+
+    def test_RBC004_IntegrationNegative_a_team_directory_may_not_carry_sources(self) -> None:
+        self.add_team("OrbitOrbit", ["Orbit 1.0.0", "Orbit 1.0.0"])
+        (self.root / "bots" / "python" / "OrbitOrbit" / "payload.py").write_text("print()", encoding="utf-8")
+
+        result = self.run_validator("--generate")
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("must contain only OrbitOrbit.json", result.stderr)
+
+    def test_RBC004_IntegrationPositive_a_team_may_span_two_platforms(self) -> None:
+        self.add_java_bot("Comet")
+        self.add_team("OrbitComet", ["Orbit 1.0.0", "Comet 1.0.2"])
+
+        result = self.run_validator("--generate")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        catalog = json.loads((self.root / "bots" / "index.json").read_text(encoding="utf-8"))
+        entries = {entry["name"]: entry for entry in catalog["bots"] if entry["status"] == "active"}
+        self.assertEqual(["Orbit 1.0.0", "Comet 1.0.2"], entries["OrbitComet"]["teamMembers"])
+        self.assertEqual("Mixed", entries["OrbitComet"]["platform"])
+
+    def test_tree_hash_orders_files_by_posix_path_regardless_of_platform(self) -> None:
+        # Path.__lt__ is case-insensitive on Windows and case-sensitive on POSIX, so a plain
+        # `sorted(Path...)` would order "src/Nested.py" before "Top.cmd" on Windows but after it
+        # on POSIX, producing different hashes for identical content depending on the host OS.
+        directory = self.root / "bots" / "python" / "OrderCheck"
+        (directory / "src").mkdir(parents=True)
+        (directory / "Top.cmd").write_text("cmd", encoding="utf-8")
+        (directory / "src" / "Nested.py").write_text("nested", encoding="utf-8")
+        expected = hashlib.sha256()
+        for relative, content in (("Top.cmd", b"cmd"), ("src/Nested.py", b"nested")):
+            expected.update(relative.encode("utf-8"))
+            expected.update(b"\0")
+            expected.update(content)
+            expected.update(b"\0")
+        self.assertEqual(f"sha256:{expected.hexdigest()}", tree_hash(directory))
+
+    @unittest.skipUnless(os.name == "posix", "the executable bit is only meaningful on POSIX")
+    def test_non_executable_boot_script_is_rejected(self) -> None:
+        script = self.root / "bots" / "python" / "Orbit" / "Orbit.sh"
+        script.chmod(script.stat().st_mode & ~0o111)
+        result = self.run_validator()
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("executable bit", result.stderr)
+
+    def test_RBC004_IntegrationNegative_duplicate_bot_names_across_platforms_are_rejected(self) -> None:
+        self.add_java_bot("Orbit")
+
+        result = self.run_validator("--generate")
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("is already used by", result.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()

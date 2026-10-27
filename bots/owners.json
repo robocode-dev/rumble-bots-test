@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "owners": [
+    {
+      "ownerId": "flemming-n-larsen",
+      "accounts": [
+        "flemming-n-larsen"
+      ],
+      "bots": [
+        "Corners",
+        "CornersCrazy",
+        "Crazy",
+        "Fire",
+        "Orbit",
+        "OrbitVector",
+        "RamFire",
+        "Retcon",
+        "RetconTwins",
+        "SpinBot",
+        "Target",
+        "TrackFire",
+        "Vector",
+        "Walls"
+      ],
+      "activeSlots": 14
+    },
+    {
+      "ownerId": "robocode-rumble-test",
+      "accounts": [
+        "robocode-rumble-test"
+      ],
+      "bots": [
+        "RumbleOnboardingScout",
+        "RumbleTestScout"
+      ],
+      "activeSlots": 2
+    }
+  ]
+}

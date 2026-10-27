@@ -1,0 +1,122 @@
+name: Publish bot catalog
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'bots/**'
+      - '!bots/index.json'
+      - '!bots/owners.json'
+      - '!bots/banned.json'
+  workflow_dispatch:
+    inputs:
+      pull_request_number:
+        description: Merged bot submission PR to republish
+        required: true
+        type: number
+
+permissions:
+  contents: write
+  pull-requests: read
+  statuses: read
+
+concurrency:
+  group: publish-catalog
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve and verify merged submission
+        id: submission
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_PR_NUMBER: ${{ inputs.pull_request_number }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "Dispatch this publisher from main." >&2; exit 1; }
+            pr_number="$INPUT_PR_NUMBER"
+          else
+            pr_number=""
+            for attempt in {1..12}; do
+              prs="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls")"
+              pr_number="$(jq -r '[.[] | select(.merged_at != null and .base.ref == "main")] | if length == 1 then .[0].number else empty end' <<< "$prs")"
+              if [[ "$pr_number" =~ ^[0-9]+$ ]]; then
+                break
+              fi
+              echo "GitHub has not associated this main commit with its merged pull request yet (attempt $attempt/12)." >&2
+              if [[ "$attempt" -lt 12 ]]; then
+                sleep 5
+              fi
+            done
+          fi
+          [[ "$pr_number" =~ ^[0-9]+$ ]] || { echo "Could not identify exactly one merged bot submission pull request." >&2; exit 1; }
+          pr="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}")"
+          jq -e '.merged_at != null and .base.ref == "main"' <<< "$pr" >/dev/null || { echo "The selected pull request must be merged into main." >&2; exit 1; }
+          head_sha="$(jq -r '.head.sha' <<< "$pr")"
+          owner="$(jq -r '.user.login' <<< "$pr")"
+          [[ "$head_sha" =~ ^[0-9a-f]{40}$ && "$owner" =~ ^[A-Za-z0-9-]+$ ]] || { echo "Unexpected pull request identity." >&2; exit 1; }
+          moderation_state="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${head_sha}/status" --jq '[.statuses[] | select(.context == "bot-moderation")][0].state')"
+          [[ "$moderation_state" == "success" ]] || { echo "The merged pull request has no current successful bot-moderation status for its head commit." >&2; exit 1; }
+          {
+            echo "pull_request_number=$pr_number"
+            echo "head_sha=$head_sha"
+            echo "owner=$owner"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        id: moderator
+        with:
+          app-id: ${{ secrets.RUMBLE_MODERATOR_APP_ID }}
+          private-key: ${{ secrets.RUMBLE_MODERATOR_PRIVATE_KEY }}
+          owner: robocode-dev
+          repositories: ${{ github.event.repository.name }}
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # The separate moderation job ran the submitted bot without write access. This publisher
+      # runs only on trusted main and performs static catalog generation; it never launches bot code.
+      - name: Regenerate catalog without running bots
+        env:
+          BOT_OWNER: ${{ steps.submission.outputs.owner }}
+        run: GITHUB_SHA="$(git rev-parse HEAD)" python scripts/validate_bot.py --root . --owner "$BOT_OWNER" --generate
+      - uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349
+        id: publisher
+        with:
+          app-id: ${{ secrets.RUMBLE_PUBLISHER_APP_ID }}
+          private-key: ${{ secrets.RUMBLE_PUBLISHER_PRIVATE_KEY }}
+          owner: robocode-dev
+          repositories: ${{ github.event.repository.name }}
+      - name: Open generated catalog pull request
+        env:
+          MODERATOR_TOKEN: ${{ steps.moderator.outputs.token }}
+          PUBLISHER_TOKEN: ${{ steps.publisher.outputs.token }}
+          DISPATCH_TOKEN: ${{ github.token }}
+          SOURCE_PR: ${{ steps.submission.outputs.pull_request_number }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add bots/index.json bots/owners.json
+          if ! git diff --cached --quiet; then
+            git commit -m 'chore: regenerate bot catalog'
+            branch="catalog/pr-${SOURCE_PR}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            auth="$(printf 'x-access-token:%s' "$MODERATOR_TOKEN" | base64 -w0)"
+            git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth}" push origin "HEAD:refs/heads/${branch}"
+            pr_number="$(GH_TOKEN="$PUBLISHER_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/pulls" \
+              -f title="chore: publish bot catalog after #${SOURCE_PR}" \
+              -f head="$branch" -f base=main \
+              -f body="Generated catalog for merged bot submission #${SOURCE_PR}. The moderator App verifies the exact generated files before merging." \
+              --jq .number)"
+            GH_TOKEN="$DISPATCH_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/dispatches" \
+              -f event_type=catalog_publication \
+              -F "client_payload[pull_request_number]=${pr_number}" \
+              -F "client_payload[source_pull_request_number]=${SOURCE_PR}"
+          fi

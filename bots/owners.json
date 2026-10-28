@@ -18,11 +18,13 @@
         "RetconTwins",
         "SpinBot",
         "Target",
+        "TestEcho",
+        "TestEchoTwo",
         "TrackFire",
         "Vector",
         "Walls"
       ],
-      "activeSlots": 14
+      "activeSlots": 16
     },
     {
       "ownerId": "robocode-rumble-test",

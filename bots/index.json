@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-10-27T18:30:49Z",
-  "commit": "05c4ecfd6c67ec33e10afa85aa0bc9b81df20416",
+  "generatedAt": "2026-10-28T17:40:10Z",
+  "commit": "08a690171dceec09a59a99d9df89513525ba395a",
   "bots": [
     {
       "name": "Corners",
@@ -197,6 +197,34 @@
         "Flemming N. Larsen"
       ],
       "addedAt": "2026-09-15",
+      "status": "active",
+      "teamMembers": []
+    },
+    {
+      "name": "TestEcho",
+      "version": "1.0.0",
+      "platform": "JVM",
+      "path": "bots/java/TestEcho",
+      "sourceHash": "sha256:70495af9af6c029df25cda2e35081d7eeb92f784d24b38e921b0e320952159d9",
+      "owner": "flemming-n-larsen",
+      "authors": [
+        "Flemming N. Larsen"
+      ],
+      "addedAt": "2026-10-28",
+      "status": "active",
+      "teamMembers": []
+    },
+    {
+      "name": "TestEchoTwo",
+      "version": "1.0.0",
+      "platform": "JVM",
+      "path": "bots/java/TestEchoTwo",
+      "sourceHash": "sha256:29d4f156c3e722ecc6a286b637e95dccd14baadd5ea056e49283c5827c16040e",
+      "owner": "flemming-n-larsen",
+      "authors": [
+        "Flemming N. Larsen"
+      ],
+      "addedAt": "2026-10-28",
       "status": "active",
       "teamMembers": []
     },

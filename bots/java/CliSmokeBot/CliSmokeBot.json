@@ -1,0 +1,10 @@
+{
+  "name": "CliSmokeBot",
+  "version": "1.0.0",
+  "authors": ["Mathew Nelson", "Flemming N. Larsen"],
+  "description": "A copy of the MyFirstBot sample bot, sent only to test sending a bot from the Rumble command line.",
+  "platform": "JVM",
+  "programmingLang": "Java 17",
+  "gameTypes": ["1v1"],
+  "license": "Apache-2.0"
+}

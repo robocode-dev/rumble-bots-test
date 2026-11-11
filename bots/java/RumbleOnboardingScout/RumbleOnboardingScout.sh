@@ -9,4 +9,4 @@ if [ ! -f "$JAR" ]; then
   curl -fsSL -o "$JAR.$$.tmp" "https://repo.maven.apache.org/maven2/dev/robocode/tankroyale/robocode-tankroyale-bot-api/$BOT_API_VERSION/robocode-tankroyale-bot-api-$BOT_API_VERSION.jar"
   mv "$JAR.$$.tmp" "$JAR"
 fi
-exec java -cp "$JAR" "$SCRIPT_DIR/src/RumbleOnboardingScout.java" "$@"
+exec java -cp "$JAR" "$SCRIPT_DIR/RumbleOnboardingScout.java" "$@"

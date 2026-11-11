@@ -1,6 +1,6 @@
 {
   "name": "RumbleOnboardingScout",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "authors": ["Flemming N. Larsen"],
   "description": "Tank Rotale testing bot.",
   "platform": "JVM",

@@ -9,5 +9,5 @@ if not exist "%JAR%" (
   if errorlevel 1 exit /b 1
   move /y "%JAR%.tmp" "%JAR%" >nul
 )
-java -cp "%JAR%" "%~dp0src\RumbleOnboardingScout.java" %*
+java -cp "%JAR%" "%~dp0RumbleOnboardingScout.java" %*
 exit /b %errorlevel%

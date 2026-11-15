@@ -24,7 +24,7 @@
         "Vector",
         "Walls"
       ],
-      "activeSlots": 16
+      "activeSlots": 14
     },
     {
       "ownerId": "robocode-rumble-test",
